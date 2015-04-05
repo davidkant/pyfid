@@ -4,33 +4,37 @@ import librosa
 import numpy as np
 import math
 
-# ---------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 # utilities
-# ---------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 
-def ratio_to_cents(r): return 1200.0 * np.log2(r)
+def ratio_to_cents(r): 
+  return 1200.0 * np.log2(r)
 
-def cents_to_ratio(c): return np.power(2, c/1200.0)
+def cents_to_ratio(c): 
+  return np.power(2, c/1200.0)
 
-def freq_to_midi(f): return 69.0 + 12.0 * np.log2(f/440.0)
+def freq_to_midi(f): 
+  return 69.0 + 12.0 * np.log2(f/440.0)
 
-def midi_to_freq(m): return np.power(2, (m-69.0)/12.0) * 440.0 if m!= 0.0 else 0.0
+def midi_to_freq(m): 
+  return np.power(2, (m-69.0)/12.0) * 440.0 if m!= 0.0 else 0.0
 
 # def bin_to_freq(b): return b * float(sr) / float(n_fft)
 # def freq_to_bin(f): return int(round(f/(float(sr)/float(n_fft)))
 # set params internall to pyfid and call from there?
 
-# ---------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 # ppitch
-# ---------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
 
 def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048, 
            num_peaks=20, num_pitches=3):
  
-  """Polyphonic pitch tracking.
+  """Polyphonic pitch estimation.
 
   :parameters:
-    - y
+    - y (time series)
     - sr
     - n_fft
     - hop_length
@@ -45,19 +49,16 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
   # other params FUCKING: (for now)
 
-  # -------------------------------------------------------------------------- #
+  # ------------------------------------------------------------------------- #
   # go to time-freq
-  # -------------------------------------------------------------------------- #
+  # ------------------------------------------------------------------------- #
 
-  if_gram, D = librosa.core.ifgram(y, 
-                                   sr=sr, 
-                                   n_fft=n_fft, 
-                                   win_length=win_length,
-                                   hop_length=hop_length)
+  if_gram, D = librosa.core.ifgram(y, sr=sr, n_fft=n_fft, 
+    win_length=win_length,hop_length=hop_length)
 
-  # -------------------------------------------------------------------------- #
+  # ------------------------------------------------------------------------- #
   # find peaks
-  # -------------------------------------------------------------------------- #
+  # ------------------------------------------------------------------------- #
 
   peak_thresh = 1e-3
 
@@ -70,7 +71,8 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
   # store pitches here
   pitches = np.zeros([num_frames, num_pitches])
-  peaks = np.zeros([num_frames,num_peaks])
+  peaks = np.zeros([num_frames, num_peaks])
+  fundamentals = np.zeros([num_frames, num_pitches])
 
   # loop through frames
   for i in range(num_frames):
@@ -104,9 +106,9 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     # note number of peaks found
     num_peaks_found = top20.shape[0]
 
-    # ---------------------------------------------------------------------------#
-    # next...
-    # ---------------------------------------------------------------------------#
+    # ----------------------------------------------------------------------- #
+    # maximum liklihood 
+    # ----------------------------------------------------------------------- #
 
     # params
     # FUCKING: redefined or same as before???
@@ -116,7 +118,7 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
     # from min_bin to max_bin in 48ths of an octave
 
-    # [1] bin index to frequency from min_freq to max_freq in 48ths of an octave
+    # [1] bin index to frequency min_freq to max_freq in 48ths of an octave
     def b2f(index): return min_freq * np.power(np.power(2, 1.0/48.0), index)
 
     # [2] max_bin is the bin at max_freq (FUCKING: rounds down?)
@@ -156,5 +158,44 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     pitches[i] = b2f(ml.argsort()[::-1][0:num_pitches])
     peaks[i] = peaks_frqs
 
-  return pitches, D, peaks 
+    # ----------------------------------------------------------------------- #
+    # estimate fundamental (least squares)
+    # ----------------------------------------------------------------------- #
+
+    # least squares solution :: WAx ~ Wb
+    # A = matrix of harmonic integers (num_peaks x 1)
+    # b = matrix of actual frequencies (num_peaks x 1)
+    # W = matrix of weights (on digaonal, num_peaks x num_peaks)
+    # x = fundamental (singletone matrix)
+
+    ml_peaks = pitches[i] # regions strong ml
+    width = 25 # count peaks w/in 25 cents
+
+    frame_fundamentals = []
+    for bin_frq in ml_peaks:
+
+      # vector of nearest harmonics
+      nearest_harmonic = (peaks_frqs/bin_frq).round()
+
+      # mask in range? vector of bools
+      mask = np.abs(ratio_to_cents( 
+        (peaks_frqs/bin_frq) / (peaks_frqs/bin_frq).round())) <= width
+
+      # weight (same harmonic weight as above)
+      weights = ml_i( (peaks_frqs/bin_frq).round() )
+
+      # build matrices
+      A = np.matrix(nearest_harmonic).T
+      b = np.matrix(peaks_frqs).T
+      W = np.matrix(np.diag(mask * weights))
+
+      # do least squares
+      fund = np.linalg.lstsq(W*A, W*b)[0][0].item()
+
+      # append
+      frame_fundamentals += [fund]
+
+    fundamentals[i] = np.array(frame_fundamentals)
+
+  return fundamentals, pitches, D, peaks
 
