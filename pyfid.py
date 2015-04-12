@@ -29,7 +29,7 @@ def midi_to_freq(m):
 # --------------------------------------------------------------------------- #
 
 def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048, 
-           num_peaks=20, num_pitches=3):
+                num_peaks=20, num_pitches=3):
  
   """Polyphonic pitch estimation.
 
@@ -70,9 +70,10 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   num_bins, num_frames = if_gram.shape
 
   # store pitches here
-  pitches = np.zeros([num_frames, num_pitches])
-  peaks = np.zeros([num_frames, num_peaks])
-  fundamentals = np.zeros([num_frames, num_pitches])
+  pitches = np.zeros([num_frames, num_pitches])       # pitch bins
+  peaks = np.zeros([num_frames, num_peaks])           # top20 peaks
+  fundamentals = np.zeros([num_frames, num_pitches])  # funds (least squares)
+  confidences = np.zeros([num_frames, num_pitches])   # confidence scores
 
   # loop through frames
   for i in range(num_frames):
@@ -155,7 +156,9 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
               ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
               ml_i((frqs_tile/histo).round()))
 
-    pitches[i] = b2f(ml.argsort()[::-1][0:num_pitches])
+    indices = ml.argsort()[::-1][0:num_pitches]
+    pitches[i] = b2f(indices)
+    confidences[i] = ml[indices]
     peaks[i] = peaks_frqs
 
     # ----------------------------------------------------------------------- #
@@ -197,5 +200,5 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
     fundamentals[i] = np.array(frame_fundamentals)
 
-  return fundamentals, pitches, D, peaks
+  return fundamentals, pitches, D, peaks, confidences
 
