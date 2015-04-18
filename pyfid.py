@@ -29,7 +29,8 @@ def midi_to_freq(m):
 # --------------------------------------------------------------------------- #
 
 def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048, 
-                num_peaks=20, num_pitches=3):
+  num_peaks=20, num_pitches=3, min_bin=2, max_bin=743, min_freq=55.0, 
+  max_freq=1000.0):
  
   """Polyphonic pitch estimation.
 
@@ -39,11 +40,19 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     - n_fft
     - hop_length
     - num_peaks
+    - num_pitches
+    - min_bin: min_bin for peak picking
+    - max_bin: max_bin for peak picking
+    - min_freq: min fundamental freq
+    - max_freq: max fundamental freq
 
   :returns:
     - pitches
     - STFT
     - peaks
+
+  :todo:
+    -> min/max_bin should be in freqs so invariant to fft size
 
    """
 
@@ -63,8 +72,8 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   peak_thresh = 1e-3
 
   # bins (freq range) to search [make sure we have room either side]
-  min_bin = 2 # make sure there's room below (For peak searching)
-  max_bin = 743 # make sure there's room above (for peak searching)
+  #min_bin = min_bin # \\--> make sure there's room below (for peak searching)
+  #max_bin = max_bin # \\--> make sure there's room above (for peak searching)
 
   # things we know
   num_bins, num_frames = if_gram.shape
@@ -111,25 +120,23 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     # maximum liklihood 
     # ----------------------------------------------------------------------- #
 
-    # params
-    # FUCKING: redefined or same as before???
-    # these are the range you'll consider for fundamentals
-    min_freq = 55.0
-    max_freq = 1000.0
+    # range we'll consider for fundamentals
+    #min_freq = min_freq
+    #max_freq = max_freq
 
-    # from min_bin to max_bin in 48ths of an octave
+    # from min_bin to max_bin in 48ths of an octave (1/4 tones)
 
     # [1] bin index to frequency min_freq to max_freq in 48ths of an octave
     def b2f(index): return min_freq * np.power(np.power(2, 1.0/48.0), index)
 
-    # [2] max_bin is the bin at max_freq (FUCKING: rounds down?)
-    max_bin = int(math.log(max_freq / min_freq, math.pow(2, 1.0/48.0))) 
+    # [2] max_histo_bin is the bin at max_freq (FUCKING: rounds down?)
+    max_histo_bin = int(math.log(max_freq / min_freq, math.pow(2, 1.0/48.0))) 
 
     # now, generate them
-    histo = np.fromfunction(lambda x,y: b2f(y), (num_peaks_found, max_bin))
+    histo = np.fromfunction(lambda x,y: b2f(y), (num_peaks_found, max_histo_bin))
   
-    frqs_tile = np.tile(peaks_frqs, (max_bin,1)).transpose()
-    mags_tile = np.tile(peaks_mags, (max_bin,1)).transpose()
+    frqs_tile = np.tile(peaks_frqs, (max_histo_bin,1)).transpose()
+    mags_tile = np.tile(peaks_mags, (max_histo_bin,1)).transpose()
 
     # likelihood function for each bin frequency
     def ml_a(amp): 
@@ -149,12 +156,12 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
       # return np.ones_like(nearest_multiple)
 
     ml = (ml_a(mags_tile) * \
-          ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
-          ml_i((frqs_tile/histo).round())).sum(axis=0)
+      ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
+      ml_i((frqs_tile/histo).round())).sum(axis=0)
 
     ml_hat = (ml_a(mags_tile) * \
-              ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
-              ml_i((frqs_tile/histo).round()))
+      ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
+      ml_i((frqs_tile/histo).round()))
 
     indices = ml.argsort()[::-1][0:num_pitches]
     pitches[i] = b2f(indices)
@@ -165,11 +172,19 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     # estimate fundamental (least squares)
     # ----------------------------------------------------------------------- #
 
-    # least squares solution :: WAx ~ Wb
-    # A = matrix of harmonic integers (num_peaks x 1)
-    # b = matrix of actual frequencies (num_peaks x 1)
-    # W = matrix of weights (on digaonal, num_peaks x num_peaks)
-    # x = fundamental (singletone matrix)
+    """estimate fundamental (least squares)
+
+    here we solve a least squares approximation to give a more precise
+    estimate of the fundamental within a histogram bin.
+    
+    least squares solution :: WAx ~ Wb
+   
+    A = matrix of harmonic integers (num_peaks x 1)
+    b = matrix of actual frequencies (num_peaks x 1)
+    W = matrix of weights (on digaonal, num_peaks x num_peaks)
+    x = fundamental (singletone matrix)
+   
+    """
 
     ml_peaks = pitches[i] # regions strong ml
     width = 25 # count peaks w/in 25 cents
@@ -200,5 +215,40 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
     fundamentals[i] = np.array(frame_fundamentals)
 
-  return fundamentals, pitches, D, peaks, confidences
+  # ------------------------------------------------------------------------- #
+  # pitch tracks
+  # ------------------------------------------------------------------------- #
+
+  """pitch tracks
+
+  here we parse the raw frequencies into pitch tracks. currently, we do this 
+  by minimizing the abs of the frame to frame difference, but we could use
+  any feature, such as distance from the running mean, variance, etc.
+
+    todo: --> implement more pitch track options
+    
+  """
+
+  # move through the frames
+  # have pitch tracks ready to go
+  # for each num_pitches put in track with nearest frame to frame difference
+  # note: what if the pitch confidence is low, might want to put track to sleep...
+  # or if it's too far from anything just for a sec
+  # or more sophisticated for like minimizing total error...
+  # here we do it dumb way from strong to weak closest match (pref to first)
+  tracks = np.zeros([num_frames, num_pitches])   # confidence scores
+  
+  tracks[0] = fundamentals[0]
+
+  tracks[0] = fundamentals[0]
+  for i in range(1, num_frames):
+    prev_tracks = list(tracks[i-1])
+    new_funds = list(fundamentals[i])
+    for j in range(num_pitches):
+      wewant = min(new_funds, key=lambda x: abs(x-prev_tracks[j]))
+      index = new_funds.index(wewant)
+      new_funds.pop(index)
+      tracks[i,j]= wewant
+
+  return fundamentals, pitches, D, peaks, confidences, tracks
 
