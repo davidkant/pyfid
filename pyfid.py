@@ -11,6 +11,16 @@ import math
 def ratio_to_cents(r): 
   return 1200.0 * np.log2(r)
 
+def ratio_to_cents_protected(f1, f2): 
+  """avoid divide by zero in here, but expects np.arrays"""
+  out = np.zeros_like(f1)
+  key = (f1!=0.0) * (f2!=0.0)
+  out[key] = 1200.0 * np.log2(f1[key]/f2[key])
+  out[f1==0.0] = -np.inf
+  out[f2==0.0] = np.inf
+  out[(f1==0.0) * (f2==0.0)] = 0.0
+  return out
+
 def cents_to_ratio(c): 
   return np.power(2, c/1200.0)
 
@@ -86,7 +96,8 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   # //--> [make sure we have room either side for peak picking]
 
   # npartial
-  harm_rolloff = math.log(2, float(npartial))
+  if npartial is not None:
+    harm_rolloff = math.log(2, float(npartial))
 
   # things we know
   num_bins, num_frames = if_gram.shape
@@ -155,32 +166,51 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     # likelihood function for each bin frequency
     def ml_a(amp): 
       """a factor depending on the amplitude of the ith peak"""
-#      return np.sqrt(np.sqrt(amp))
       return np.sqrt(np.sqrt(amp/max_amp))
+      # return np.sqrt(np.sqrt(amp))
       # return np.ones_like(amp)
       # return amp
 
-    def ml_t(freq_ratio):
+    def ml_t(r1, r2):
       """how closely the ith peak is tuned to a multiple of f"""
       max_dist = ml_width # cents
-      cents = np.abs(ratio_to_cents(freq_ratio))
+      cents = np.abs(ratio_to_cents_protected(r1,r2))
       dist = np.clip(1.0 - (cents / max_dist), 0, 1)
-      return dist
+      return dist 
 
     def ml_i(nearest_multiple): 
       """whether the peak is closest to a high or low multiple of f"""
-      return 1/np.power(np.clip(nearest_multiplei , 1, 32767), harm_rolloff) * (nearest_multiple <= max_harm) 
+      out = np.zeros_like(nearest_multiple)
+      out[nearest_multiple.nonzero()] = 1/np.power(nearest_multiple[nearest_multiple.nonzero()], harm_rolloff) 
+      return out
       # return 1/np.power(np.clip(nearest_multiple + harm_offset, 1, 32767), harm_rolloff) * (nearest_multiple <= max_harm) 
       # return 1/np.power(nearest_multiple+1, 2)
       # return np.ones_like(nearest_multiple)
 
     ml = (ml_a(mags_tile) * \
-      ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
+      ml_t((frqs_tile/histo), (frqs_tile/histo).round()) * \
       ml_i((frqs_tile/histo).round())).sum(axis=0)
 
     ml_hat = (ml_a(mags_tile) * \
-      ml_t((frqs_tile/histo) / (frqs_tile/histo).round()) * \
+      ml_t((frqs_tile/histo), (frqs_tile/histo).round()) * \
       ml_i((frqs_tile/histo).round()))
+    
+    #  the old fashioned way...
+    #  ml_of = np.zeros([num_peaks_found, max_histo_bin])
+    #  for j in range(num_peaks_found):
+    #    for k in range(max_histo_bin):
+
+    #      frq = peaks_frqs[j]
+    #      amp = peaks_mags[j]
+    #      histo_frq = b2f(k)
+    #      nearest_multiple = (frq / histo_frq).round()
+
+    #      if nearest_multiple != 0.0:
+    #        frq_ratio = (frq / histo_frq) / nearest_multiple
+    #        ml_of[j,k] = ml_a(amp) * ml_t(frq_ratio) * ml_i(nearest_multiple)
+    #      else:
+    #        ml_of[j,k] = 0.0
+
 
     """super rough hack but work!
 
@@ -245,8 +275,8 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
       nearest_harmonic = (peaks_frqs/bin_frq).round()
 
       # mask in range? vector of bools
-      mask = np.abs(ratio_to_cents( 
-        (peaks_frqs/bin_frq) / (peaks_frqs/bin_frq).round())) <= width
+      mask = np.abs(ratio_to_cents_protected( 
+        (peaks_frqs/bin_frq), (peaks_frqs/bin_frq).round())) <= width
 
       # weight (same harmonic weight as above)
       weights = ml_i( (peaks_frqs/bin_frq).round() )
