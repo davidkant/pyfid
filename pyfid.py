@@ -196,20 +196,20 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
       ml_i((frqs_tile/histo).round()))
     
     #  the old fashioned way...
-    #  ml_of = np.zeros([num_peaks_found, max_histo_bin])
-    #  for j in range(num_peaks_found):
-    #    for k in range(max_histo_bin):
+    ml_of = np.zeros([num_peaks_found, max_histo_bin])
+    for j in range(num_peaks_found):
+      for k in range(max_histo_bin):
 
-    #      frq = peaks_frqs[j]
-    #      amp = peaks_mags[j]
-    #      histo_frq = b2f(k)
-    #      nearest_multiple = (frq / histo_frq).round()
+        frq = peaks_frqs[j]
+        amp = peaks_mags[j]
+        histo_frq = b2f(k)
+        nearest_multiple = (frq / histo_frq).round()
 
-    #      if nearest_multiple != 0.0:
-    #        frq_ratio = (frq / histo_frq) / nearest_multiple
-    #        ml_of[j,k] = ml_a(amp) * ml_t(frq_ratio) * ml_i(nearest_multiple)
-    #      else:
-    #        ml_of[j,k] = 0.0
+        if nearest_multiple != 0.0:
+           frq_ratio = (frq / histo_frq) / nearest_multiple
+           ml_of[j,k] = ml_a(amp) * ml_t(frq_ratio) * ml_i(nearest_multiple)
+        else:
+           ml_of[j,k] = 0.0
 
 
     """super rough hack but work!
