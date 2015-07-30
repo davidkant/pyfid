@@ -33,7 +33,7 @@ def freq_to_bin(f, sr, n_fft):
 def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048, 
   num_peaks=20, num_pitches=3, min_peak=2, max_peak=743, min_fund=55.0, 
   max_fund=1000.0, harm_offset=0, harm_rolloff=0.75, ml_width=25, 
-  bounce_width=0, max_harm=32767):
+  bounce_width=0, max_harm=32767, npartial=7):
  
   """Polyphonic pitch estimation.
 
@@ -58,7 +58,9 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     -> min/max_bin should be in freqs so invariant to fft size
     -> stats for how much bounced
 
-  :notes:
+  :notes
+    - changing to npartial instead of harm_rolloff, 
+      but if npartial=None, use harm_rolloff
     - previously was nearest_multiple+1 # to avoid divide by 0
 
    """
@@ -82,6 +84,9 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   min_bin = 2
   max_bin = freq_to_bin(float(max_peak), sr, n_fft)
   # //--> [make sure we have room either side for peak picking]
+
+  # npartial
+  harm_rolloff = math.log(2, float(npartial))
 
   # things we know
   num_bins, num_frames = if_gram.shape
@@ -164,7 +169,8 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
 
     def ml_i(nearest_multiple): 
       """whether the peak is closest to a high or low multiple of f"""
-      return 1/np.power(np.clip(nearest_multiple + harm_offset, 1, 32767), harm_rolloff) * (nearest_multiple <= max_harm) 
+      return 1/np.power(np.clip(nearest_multiplei , 1, 32767), harm_rolloff) * (nearest_multiple <= max_harm) 
+      # return 1/np.power(np.clip(nearest_multiple + harm_offset, 1, 32767), harm_rolloff) * (nearest_multiple <= max_harm) 
       # return 1/np.power(nearest_multiple+1, 2)
       # return np.ones_like(nearest_multiple)
 
