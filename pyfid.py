@@ -43,7 +43,8 @@ def freq_to_bin(f, sr, n_fft):
 def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048, 
   num_peaks=20, num_pitches=3, min_peak=2, max_peak=743, min_fund=55.0, 
   max_fund=1000.0, harm_offset=0, harm_rolloff=0.75, ml_width=25, 
-  bounce_width=0, max_harm=32767, npartial=7):
+  bounce_width=0, bounce_hist=0, bounce_ratios=None, max_harm=32767, 
+  npartial=7):
  
   """Polyphonic pitch estimation.
 
@@ -191,9 +192,10 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
       ml_t((frqs_tile/histo), (frqs_tile/histo).round()) * \
       ml_i((frqs_tile/histo).round())).sum(axis=0)
 
-    ml_hat = (ml_a(mags_tile) * \
-      ml_t((frqs_tile/histo), (frqs_tile/histo).round()) * \
-      ml_i((frqs_tile/histo).round()))
+    # for debugging
+    # ml_hat = (ml_a(mags_tile) * \
+    #   ml_t((frqs_tile/histo), (frqs_tile/histo).round()) * \
+    #   ml_i((frqs_tile/histo).round()))
     
 
     """super rough hack but work!
@@ -202,20 +204,34 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
     only tests in one direction (new is higher), adjust so ratio goes both ways
     what about which harms we're testing for should that be variable too
     """
+
     num_found = 0
     maybe = 0
     found_so_far = []
+    bounce_list = list(np.ravel(pitches[i-bounce_hist:i]))
+    # bounce_ratios = [1,2,3,4,5,6]
+    bounce_ratios = [1.0, 2.0, 3.0/2.0, 3.0, 4.0] if bounce_ratios is None else bounce_ratios
     prev_frame = list(pitches[i-1]) if i>0 else []
     indices = ml.argsort()[::-1]
+    print('bounce list {0}').format(bounce_list)
     while num_found < num_pitches and maybe <= ml.shape[0]:
       this_one = b2f(indices[maybe])
-      bounce1 = any([any([abs(ratio_to_cents(this_one/(other_one*harm))) < bounce_width for harm in [1,2,3,4,5,6]]) for other_one in found_so_far+prev_frame])
-      bounce2 = any([any([abs(ratio_to_cents(other_one/(this_one*harm))) < bounce_width for harm in [1,2,3,4,5,6]]) for other_one in found_so_far+prev_frame])
-      bounce = bounce1 or bounce2
-      # print this_one, bounce, found_so_far
+      # check bounce with this frame
+      bounce1 = any([any([abs(ratio_to_cents(
+        this_one/(other_one*harm))) < bounce_width 
+        for harm in bounce_ratios]) 
+        for other_one in bounce_list])
+      bounce2 = any([any([abs(ratio_to_cents
+        (other_one/(this_one*harm))) < bounce_width
+        for harm in bounce_ratios]) 
+        for other_one in bounce_list])
+      # if any bounces
+      bounce = bounce1 or bounce2 
+      print this_one, bounce, found_so_far
       if not bounce:
         #print 'notbounce'
         found_so_far += [this_one]
+        bounce_list += [this_one]
         num_found += 1
       # if bounce: print 'bounce!!!!'
       maybe += 1
@@ -282,6 +298,149 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   # pitch tracks
   # ------------------------------------------------------------------------- #
 
+  tracks = np.copy(pitches)
+
+  return fundamentals, pitches, D, peaks, confidences, tracks
+
+
+# --------------------------------------------------------------------------- #
+# extras
+# --------------------------------------------------------------------------- #
+
+def voice_tracks(pitches, confidences):
+
+  # alloc output data
+  out = np.zeros_like(pitches)
+  out[0] = pitches[0]
+
+  out_confidences = np.zeros_like(confidences)
+  out_confidences[0] = confidences[0]
+
+  num_frames, num_voices = pitches.shape
+
+  # loop through frames
+  for i in range(1,num_frames):
+
+    # setup
+    prev_frame = out[i-1]
+    next_frame = pitches[i]
+
+    # pairwise distances indexed [from, to]
+    delta = np.abs(ratio_to_cents(np.atleast_2d(prev_frame).T/np.repeat(
+      np.atleast_2d(next_frame),num_voices,axis=0)))
+    # delta = np.abs(ratio_to_cents_protected(np.atleast_2d(prev_frame).T,
+      # np.repeat(np.atleast_2d(next_frame),num_voices,axis=0)))
+
+    # indices of sorted delta [from, to]
+    delta_sorted = np.unravel_index(np.argsort(delta.ravel()), delta.shape)
+
+    # step through and reject if either prev or next is already found
+    num_found = 0; found_prevs = []; found_nexts = []; index = 0
+
+    while num_found < num_voices:
+      prev_voice,next_voice = delta_sorted[0][index], delta_sorted[1][index]
+      if prev_voice not in found_prevs and next_voice not in found_nexts:
+        out[i][prev_voice] = pitches[i][next_voice]
+        out_confidences[i][prev_voice] = confidences[i][next_voice]
+        found_prevs += [prev_voice]
+        found_nexts += [next_voice]
+        num_found += 1
+      index += 1
+
+  return out, out_confidences
+
+# --------------------------------------------------------------------------- #
+
+"""pitchsets.
+
+  this is slightly ineffient b/c we filter twice
+
+    1. first for change (vibrato depth)
+    2. then for sustain (vibrato length)
+    3. whatever is left are ampsets
+
+    - it could all be done in one pass, but this makes it easier to swap in
+      change measures (absolute vs relative grid) and sustain measures
+
+  * currently pitchsets are detected by voice but reported by frame to be 
+    consistent with ampsets. 
+    
+  -> this should change.
+
+"""
+
+def pitchsets(pitches, win=3):
+
+  # 1. filter for change on an asbolute 1/2-tone grid (depth)
+  pitches_change = change_filter(pitches)
+
+  # 2. filter for sustain (length)
+  pitches_sustain = sustain_filter(pitches_change, win=win)
+
+  # 3. what is left are pitchsets
+  pitchsets = np.sort(np.array(list(set(np.argwhere(np.nan_to_num(pitches_sustain))[:,0]))))
+  
+  return pitchsets, np.where(np.nan_to_num(pitches_sustain))
+
+# --------------------------------------------------------------------------- #
+
+"""filter for change.
+
+  * filter for change on grid rounded to nearest 1/2 tone
+  * non-change pitches are changed to 0's
+
+  -> maybe this should be np.nan's instead
+
+"""
+
+def change_filter(pitches):
+
+  # copy working data
+  wpitches = np.copy(pitches)
+
+  # alloc output data
+  out = np.zeros_like(wpitches)
+  out[out==0] = np.nan
+
+  # convert to midi pitch and round
+  wpitches = freq_to_midi(wpitches).round()
+
+  # indices of pitch change
+  indices = np.diff(wpitches, axis=0).nonzero()
+
+  # copy pitch values from original data where change
+  out[0] = pitches[0]
+  out[1:][indices] = pitches[1:][indices]
+
+  return out 
+
+# --------------------------------------------------------------------------- #
+
+"""filter for sustain.
+
+  * say something here: wish could be numpy...
+
+"""
+
+def sustain_filter(pitches, win=3):
+
+  # alloc output data
+  out = np.zeros_like(pitches)
+
+  # loop through frames and pitches
+  for i in range(pitches.shape[0]-win):
+    for j in range(pitches.shape[1]):
+
+        # keep pitch if win after are nan
+        out[i,j] = pitches[i,j] * np.isnan(pitches[i+1:i+win,j]).all()
+
+  # convert 0 to nan
+  out[out==0] = np.nan
+
+  return out 
+
+# --------------------------------------------------------------------------- #
+
   """pitch tracks
 
   here we parse the raw frequencies into pitch tracks. currently, we do this 
@@ -299,27 +458,19 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
   # or if it's too far from anything just for a sec
   # or more sophisticated for like minimizing total error...
   # here we do it dumb way from strong to weak closest match (pref to first)
-  tracks = np.zeros([num_frames, num_pitches])   # confidence scores
+  # tracks = np.zeros([num_frames, num_pitches])   # confidence scores
   
-  tracks[0] = fundamentals[0]
+  # tracks[0] = fundamentals[0]
 
-  tracks[0] = fundamentals[0]
-  for i in range(1, num_frames):
-    prev_tracks = list(tracks[i-1])
-    new_funds = list(fundamentals[i])
-    for j in range(num_pitches):
-      wewant = min(new_funds, key=lambda x: abs(x-prev_tracks[j]))
-      index = new_funds.index(wewant)
-      new_funds.pop(index)
-      tracks[i,j]= wewant
-
-  return fundamentals, pitches, D, peaks, confidences, tracks
-
-
-# --------------------------------------------------------------------------- #
-# extras
-# --------------------------------------------------------------------------- #
-
+  # tracks[0] = fundamentals[0]
+  # for i in range(1, num_frames):
+  #   prev_tracks = list(tracks[i-1])
+  #   new_funds = list(fundamentals[i])
+  #   for j in range(num_pitches):
+  #     wewant = min(new_funds, key=lambda x: abs(x-prev_tracks[j]))
+  #     index = new_funds.index(wewant)
+  #     new_funds.pop(index)
+  #     tracks[i,j]= wewant
 def pitch_onsets(funds, win=2, depth=25):
   
   onsets = np.zeros_like(funds)
