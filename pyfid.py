@@ -48,28 +48,36 @@ def ppitch(y, sr=44100, n_fft=4096, win_length=1024, hop_length=2048,
  
   """Polyphonic pitch estimation.
 
-  :parameters:
-    - y (time series)
-    - sr
-    - n_fft
-    - hop_length
-    - num_peaks
-    - num_pitches
-    - min_peak: min_bin for peak picking
-    - max_peak: max_bin for peak picking
+  parameters:
+    - y: signal to analyze
+    - sr: sample rate
+    - n_fft: fft size
+    - win_length: fft window size
+    - hop_length: stft hop
+    - num_peaks: number of peaks to find
+    - num_pitches: number of pitches ot find
+    - min_peak: min peak frequency (Hz) <- NOT IMPLEMENTED
+    - max_peak: max peak frequency (Hz)
     - min_fund: min fundamental freq
     - max_fund: max fundamental freq
+    - harm_offset: deprecated 
+    - harm_rolloff: deprecated (use if npartial is None)
+    - ml_width: cents range to include peak in maximum likliehood
+    - bounce_width: bounce freqs w/in this +/- this range from bounce_ratios
+    - bounce_hist: bounce freqs from previous frames as well
+    - bounce_ratios: bounce freqs w/in +/- bounce_width of these ratios
+    - max_harm: basically deprecated, don't use harms above this one
+    - npartial: partial that is half weight
 
-  :returns:
+  returns:
     - pitches
     - STFT
     - peaks
 
-  :todo:
-    -> min/max_bin should be in freqs so invariant to fft size
+  todo:
     -> stats for how much bounced
 
-  :notes
+  notes
     - changing to npartial instead of harm_rolloff, 
       but if npartial=None, use harm_rolloff
     - previously was nearest_multiple+1 # to avoid divide by 0
